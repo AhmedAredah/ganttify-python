@@ -1,0 +1,17 @@
+Ganttify Python
+Copyright (C) 2026 Ahmed Aredah
+
+Python adaptation of Ganttify by Ahmed Aredah.
+Original project: https://github.com/AhmedAredah/Ganttify
+Source version: 0.2.12
+Source commit: 5853bf763e1ad3fc25d82e4a9e9435d3ee798bd1
+
+This adaptation was created in October 2026. It reorganizes the implementation
+into Python domain, configuration, rendering, and export components, and includes
+the original project's example dataset. Intentional behavioral corrections are
+documented in docs/porting.md.
+
+Distributed under the GNU General Public License, version 3 only.
+See LICENSE for the complete terms and warranty disclaimer.
+
+Plotly is a separate dependency distributed under its own MIT license.
