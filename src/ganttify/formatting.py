@@ -66,7 +66,7 @@ def format_label(template: str, row: Row) -> str:
         if value is None:
             return ""
         if isinstance(value, (datetime, date)):
-            return value.strftime("%m/%d/%Y")
+            return f"{value.month:02d}/{value.day:02d}/{value.year:04d}"
         return str(value)
 
     return re.sub(r"\{([a-z_]+)\}", replace, template)

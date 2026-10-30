@@ -250,3 +250,118 @@ test('milestone area hover markers follow viewport edges during scrolling', asyn
     assert.equal(controller.state.lastError, null);
     controller.destroy();
 });
+
+test('label fitting follows current Plotly margin rather than initial metadata', () => {
+    const node = textNode();
+    node.__data__ = {x: 1};
+    const el = {
+        layout: {margin: {l: 120}, yaxis: {tickvals: [1]},
+            meta: {ganttify: {gutter_width: 300, full_labels: ['A long visible activity label']}}},
+        _fullLayout: {margin: {l: 80}},
+        querySelectorAll() { return [node]; },
+    };
+    runtime.alignLabels(el);
+    assert.ok(node.getComputedTextLength() <= 70);
+    assert.equal(node.children[0].textContent, 'A long visible activity label');
+    delete el._fullLayout;
+    runtime.alignLabels(el);
+    assert.ok(node.getComputedTextLength() <= 110);
+    assert.ok(node.visible().length > 10);
+});
+
+test('caller tick text remains authoritative across repeated label fitting', () => {
+    const node = textNode();
+    node.__data__ = {x: 1};
+    node.textContent = 'Caller replacement label with complete accessible text';
+    const el = {
+        layout: {margin: {l: 100}, yaxis: {tickvals: [1], ticktext: ['Caller replacement label with complete accessible text']},
+            meta: {ganttify: {full_labels: ['Original activity'], rendered_ticktext: ['Original activity']}}},
+        querySelectorAll() { return [node]; },
+    };
+    runtime.alignLabels(el);
+    const complete = node.children[0].textContent;
+    assert.equal(complete, 'Caller replacement label with complete accessible text');
+    runtime.alignLabels(el);
+    assert.equal(node.children[0].textContent, complete);
+    el.layout.yaxis.ticktext = ['Original activity'];
+    runtime.alignLabels(el);
+    assert.equal(node.children[0].textContent, 'Original activity');
+});
+
+test('static Plotly exports retain visual enhancements without custom input handlers', async () => {
+    const f = fixture();
+    f.el._context = {staticPlot: true};
+    const original = f.el.layout.yaxis.range.slice();
+    const controller = runtime.mount(f.el, f.Plotly, f.host);
+    await controller.refresh();
+    assert.equal(f.wheel.size, 0);
+    assert.equal(f.events.has('plotly_relayout'), false);
+    assert.deepEqual(f.el.layout.yaxis.range, original);
+    assert.ok(f.el.layout.shapes.some(shape => shape.name === 'ganttify-background'));
+    assert.ok(controller.state.lastRangeKey);
+    controller.destroy();
+});
+
+test('milestone line hover covers a small viewport at pixel scale and resizes', async () => {
+    const f = fixture();
+    f.el.layout.yaxis.range = [0.5, 2.5];
+    f.el._fullLayout = {yaxis: {_length: 180}, xaxis: {_length: 800}};
+    f.el.data.push({x: ['2025-01-20'], y: [0.5], hovertext: ['Original milestone tooltip'],
+        customdata: [{source: 'milestone'}],
+        meta: {ganttify: {kind: 'milestone-line', date: '2025-01-20'}}});
+    const controller = runtime.mount(f.el, f.Plotly, f.host);
+    await controller.refresh();
+    const line = f.el.data[1];
+    assert.equal(line.y[0], 0.5);
+    assert.equal(line.y.at(-1), 2.5);
+    for (let i = 1; i < line.y.length; i += 1) {
+        assert.ok((line.y[i] - line.y[i - 1]) * 180 / 2 <= 8.000001);
+    }
+    assert.ok(line.hovertext.every(value => value === 'Original milestone tooltip'));
+    assert.ok(line.customdata.every(value => value.source === 'milestone'));
+    const originalCount = line.y.length;
+    f.el._fullLayout.yaxis._length = 700;
+    await controller.refresh();
+    assert.ok(line.y.length > originalCount);
+    assert.equal(f.el.layout.xaxis.type, 'date');
+    const changes = f.counters.update;
+    await controller.refresh();
+    assert.equal(f.counters.update, changes);
+    controller.destroy();
+});
+
+test('long milestone area hover is resampled inside a tightly zoomed window', async () => {
+    const f = fixture();
+    f.el._fullLayout = {xaxis: {_length: 800}, yaxis: {_length: 400}};
+    f.el.layout.xaxis.range = ['2025-02-01', '2025-02-02'];
+    f.el.data.push({x: ['1900-01-01', '2100-01-01'], y: [1, 1],
+        hovertext: ['Original 200-year interval tooltip', 'Original 200-year interval tooltip'],
+        meta: {ganttify: {kind: 'milestone-area', original_start: '1900-01-01',
+            original_end: '2100-01-01', label_position: 'middle'}}});
+    const controller = runtime.mount(f.el, f.Plotly, f.host);
+    await controller.refresh();
+    const area = f.el.data[1];
+    assert.equal(area.x[0], '2025-02-01T00:00:00.000Z');
+    assert.equal(area.x.at(-1), '2025-02-02T00:00:00.000Z');
+    assert.equal(area.x.length, 101);
+    assert.ok(area.y.every(value => value === 90.5));
+    assert.ok(area.hovertext.every(value => value === 'Original 200-year interval tooltip'));
+    f.el.layout.xaxis.range = ['2200-01-01', '2200-01-02'];
+    await controller.refresh();
+    assert.equal(area.x.length, 2);
+    f.el.layout.xaxis.range = ['2025-02-01', '2025-02-02'];
+    await controller.refresh();
+    assert.equal(area.x.length, 101);
+    assert.ok(area.hovertext.every(value => value === 'Original 200-year interval tooltip'));
+    controller.destroy();
+});
+
+test('calendar bands cover the entire Python calendar without unbounded work', () => {
+    const result = runtime.timeline(['0001-01-01', '9999-12-31'], []);
+    assert.equal(result.mode, 'array');
+    assert.ok(result.shapes.length <= 202);
+    assert.equal(result.shapes[0].x0, '0001-01-01T00:00:00.000Z');
+    assert.ok(runtime.utcMillis(result.shapes.at(-1).x1) >= runtime.utcMillis('9999-12-31'));
+    assert.ok(Number(result.labels.at(-1).split('–')[1]) >= 9999);
+    assert.ok(runtime.utcMillis(result.values.at(-1)) > runtime.utcMillis('9900-01-01'));
+});

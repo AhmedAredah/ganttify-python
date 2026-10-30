@@ -2,19 +2,15 @@
 
 from __future__ import annotations
 
-import atexit
-import shutil
-import tempfile
-import webbrowser
 from collections.abc import Mapping, Sequence
 from datetime import date
 from importlib.resources import files
-from pathlib import Path
 from typing import Any, Protocol
 
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from ._browser import open_html_in_browser
 from .config import (
     BarConfig,
     ChartConfig,
@@ -85,6 +81,8 @@ class GanttChart:
 
         ``renderer=None`` uses a notebook when IPython is active, otherwise a
         browser. Use ``figure.show()`` for other standard Plotly renderers.
+        Browser previews wait up to 30 seconds for the page request, so scripts
+        can exit without deleting an unread file. Save HTML for later reopening.
         """
         notebook = False
         try:
@@ -103,11 +101,17 @@ class GanttChart:
             kwargs.setdefault("full_html", False)
             display(HTML(self.to_html(**kwargs)))
         elif renderer == "browser":
-            directory = Path(tempfile.mkdtemp(prefix="ganttify-"))
-            atexit.register(shutil.rmtree, directory, ignore_errors=True)
-            target = directory / "chart.html"
-            self.write_html(target, **kwargs)
-            webbrowser.open(target.as_uri())
+            # A fresh preview needs Plotly and has no filesystem asset directory.
+            bundle = kwargs.get("include_plotlyjs")
+            if bundle is False or bundle == "directory":
+                kwargs["include_plotlyjs"] = True
+            elif isinstance(bundle, str) and bundle.endswith(".js"):
+                if not bundle.startswith(("https://", "http://", "//")):
+                    raise ValueError(
+                        "Browser preview requires an HTTP(S) Plotly URL or an embedded bundle; "
+                        "use write_html() for local JavaScript assets"
+                    )
+            open_html_in_browser(self.to_html(**kwargs))
         else:
             raise ValueError("Use renderer='browser' or 'notebook', or figure.show() for Plotly")
 
@@ -136,7 +140,8 @@ def ganttify(
 
     Column names and the six configuration sections follow the original R
     library. Nested dictionaries and typed configuration objects are accepted.
-    ISO dates and native ``date`` objects are accepted alongside ``date_format``.
+    The default format accepts US and ISO strings; an explicit nondefault
+    ``date_format`` governs all date strings. Native dates bypass string parsing.
     ``as_of`` makes in-progress actual spans and dimming reproducible.
     """
     if not isinstance(chart_title, str):

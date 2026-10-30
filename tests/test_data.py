@@ -35,9 +35,42 @@ def test_date_inputs(value):
 
 def test_custom_date_format_does_not_guess_ambiguous_dates():
     assert parse_date("10/01/2025", "date", date_format="%d/%m/%Y") == date(2025, 1, 10)
-    assert parse_date("2025-01-10", "date", date_format="%d/%m/%Y") == date(2025, 1, 10)
+    with pytest.raises(ValueError, match="selected format"):
+        parse_date("2025-01-10", "date", date_format="%d/%m/%Y")
     with pytest.raises(ValueError, match="Invalid date"):
         parse_date("31/01/2025", "date")
+
+
+def test_explicit_date_format_wins_over_iso_shaped_strings():
+    assert parse_date("2025-02-01", "date", date_format="%Y-%d-%m") == date(2025, 1, 2)
+    assert parse_date("2025-31-01", "date", date_format="%Y-%d-%m") == date(2025, 1, 31)
+    assert parse_date(date(2025, 2, 1), "date", date_format="%Y-%d-%m") == date(2025, 2, 1)
+    assert parse_date("2025-02-01", "date") == date(2025, 2, 1)
+
+
+def test_custom_format_is_consistent_for_planned_actual_and_milestone_dates():
+    result = prepare_project(
+        WBS,
+        [
+            dict(
+                ACTIVITY,
+                Start_Date="2025-02-01",
+                End_Date="2025-03-01",
+                Start_Date_Actual="2025-04-01",
+                End_Date_Actual="2025-31-01",
+            )
+        ],
+        [{"date": ["2025-02-01", "2025-31-01"], "label": "Review"}],
+        date_format="%Y-%d-%m",
+        as_of=AS_OF,
+    )
+    activity = result.activities[0]
+    assert (activity.start, activity.end) == (date(2025, 1, 2), date(2025, 1, 3))
+    assert (activity.start_actual, activity.end_actual) == (date(2025, 1, 4), date(2025, 1, 31))
+    assert (result.milestones[0].start, result.milestones[0].end) == (
+        date(2025, 1, 2),
+        date(2025, 1, 31),
+    )
 
 
 @pytest.mark.parametrize("value", [None, "", "   ", float("nan")])
@@ -75,6 +108,18 @@ def test_actual_start_only_infers_current_end_without_mutating_source():
     assert actual.start_actual == date(2025, 1, 2)
     assert actual.end_actual == AS_OF
     assert "End_Date_Actual" not in source
+
+
+def test_activity_fields_expose_normalized_and_inferred_dates_consistently():
+    source = dict(ACTIVITY, Start_Date_Actual="01/02/2025", End_Date_Actual=None, Owner="PM")
+    actual = project(activities=[source]).activities[0]
+    assert actual.fields["Start_Date"] == actual.start == date(2025, 1, 1)
+    assert actual.fields["End_Date"] == actual.end == date(2025, 1, 10)
+    assert actual.fields["Start_Date_Actual"] == actual.start_actual == date(2025, 1, 2)
+    assert actual.fields["End_Date_Actual"] == actual.end_actual == AS_OF
+    assert actual.fields["Owner"] == "PM"
+    assert source["Start_Date"] == "01/01/2025"
+    assert source["End_Date_Actual"] is None
 
 
 def test_future_actual_start_infers_same_day_end():
@@ -164,6 +209,19 @@ def test_milestone_defaults_and_range_data():
     assert second.fields["Owner"] == "PM"
 
 
+def test_same_day_two_date_milestone_retains_interval_identity():
+    point, interval = project(
+        milestones=[
+            {"date": "2025-01-02", "label": "Point"},
+            {"date": ["2025-01-02", "2025-01-02"], "label": "One-day interval"},
+        ]
+    ).milestones
+    assert point.start == point.end == interval.start == interval.end
+    assert not point.is_range and not point.is_area
+    assert interval.is_range and interval.is_area
+    assert point.fill_opacity == 1.0 and interval.fill_opacity == 0.15
+
+
 @pytest.mark.parametrize(
     "updates,match",
     [
@@ -192,6 +250,29 @@ def test_pandas_inputs_and_missing_actuals():
     assert result.activities[0].end_actual is None
     assert parse_date(pd.Timestamp("2025-01-10"), "date") == date(2025, 1, 10)
     assert parse_date(pd.NaT, "date", optional=True) is None
+
+
+@pytest.mark.parametrize("table", ["wbs_structure", "activities", "milestone_lines"])
+def test_duplicate_dataframe_columns_are_rejected_before_record_conversion(table):
+    pd = pytest.importorskip("pandas")
+    values = {
+        "wbs_structure": WBS[0],
+        "activities": ACTIVITY,
+        "milestone_lines": {"date": "2025-01-02", "label": "Deadline"},
+    }
+    row = values[table]
+    duplicate = "End_Date" if table == "activities" else next(iter(row))
+    frame = pd.DataFrame([[*row.values(), row[duplicate]]], columns=[*row.keys(), duplicate])
+    inputs = {"wbs_structure": WBS, "activities": [ACTIVITY], "milestone_lines": None}
+    inputs[table] = frame
+    with pytest.raises(ValueError, match=rf"{table} has duplicate column names: {duplicate}"):
+        prepare_project(**inputs, as_of=AS_OF)
+
+
+def test_duplicate_dataframe_columns_are_rejected_even_when_no_rows_exist():
+    pd = pytest.importorskip("pandas")
+    with pytest.raises(ValueError, match="activities has duplicate column names: End_Date"):
+        project(activities=pd.DataFrame(columns=[*ACTIVITY, "End_Date"]))
 
 
 def test_mixed_dataframe_milestone_options_use_defaults_for_null_cells():

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import types
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields
 from types import MappingProxyType
 from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
@@ -70,10 +70,23 @@ class _Config:
     def __post_init__(self) -> None:
         hints = get_type_hints(type(self))
         for item in fields(self):  # type: ignore[arg-type]
+            annotation = hints[item.name]
+            value = getattr(self, item.name)
+            # R's NULL selects the default for ordinary configuration fields.
+            # Preserve None only where it has an explicit, nullable meaning.
+            nullable = annotation is type(None) or (
+                get_origin(annotation) in (Union, types.UnionType)
+                and type(None) in get_args(annotation)
+            )
+            if value is None and not nullable:
+                if item.default is not MISSING:
+                    value = item.default
+                elif item.default_factory is not MISSING:
+                    value = item.default_factory()
             object.__setattr__(
                 self,
                 item.name,
-                _convert(getattr(self, item.name), hints[item.name], item.name),
+                _convert(value, annotation, item.name),
             )
         self._validate()
 

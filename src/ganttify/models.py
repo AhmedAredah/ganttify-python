@@ -20,7 +20,7 @@ class WBSNode:
 
 @dataclass(frozen=True, slots=True)
 class Activity:
-    """An activity with planned dates and optional actual dates."""
+    """An activity whose source fields share its normalized planned/actual dates."""
 
     id: str
     name: str
@@ -46,11 +46,12 @@ class Milestone:
     label_position: str
     label_level: int
     fields: Mapping[str, Any]
+    is_range: bool = False
 
     @property
     def is_area(self) -> bool:
-        """Whether this milestone covers more than one date."""
-        return self.start != self.end
+        """Whether the input describes an interval, including a single-day one."""
+        return self.is_range or self.start != self.end
 
 
 @dataclass(frozen=True, slots=True)

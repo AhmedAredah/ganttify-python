@@ -51,6 +51,8 @@ jobs:
 
   browser:
     runs-on: ubuntu-latest
+    env:
+      GANTTIFY_TEST_INSTALLED: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,6 +65,7 @@ jobs:
       - run: npm install --no-save --package-lock=false playwright@1.62.1
       - run: npx playwright install --with-deps chromium
       - run: node tests/browser_smoke.cjs
+      - run: node tests/browser_regressions.cjs
 
   minimum-plotly:
     runs-on: ubuntu-latest

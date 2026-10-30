@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from .data import _validate_graph
@@ -112,7 +113,14 @@ def build_rows(
                     start=span[0] if span else None,
                     end=span[1] if span else None,
                     activity=None,
-                    fields=node.fields,
+                    fields=MappingProxyType(
+                        {
+                            **node.fields,
+                            "Level": level,
+                            "Start_Date": span[0] if span else None,
+                            "End_Date": span[1] if span else None,
+                        }
+                    ),
                 )
             )
         if display.activity.show:

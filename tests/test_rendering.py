@@ -167,7 +167,10 @@ def test_milestone_shapes_tooltips_labels_and_level_hiding(records):
     assert review.yref == "paper" and review.y == 0.5
     hover = [trace for trace in figure.data if trace.type == "scatter"]
     assert "Project owner" in hover[0].hovertext[0]
-    assert len(hover[0].y) == 4
+    assert hover[0].meta["ganttify"]["kind"] == "milestone-line"
+    assert hover[0].meta["ganttify"]["date"].startswith("2025-01-02")
+    assert min(hover[0].y) == figure.layout.yaxis.range[0]
+    assert max(hover[0].y) == figure.layout.yaxis.range[1]
     assert hover[1].mode == "markers"
     assert hover[1].fill is None
     assert set(hover[1].y) == {2}
@@ -271,12 +274,87 @@ def test_area_hover_uses_visible_label_edge_without_covering_bars(records, posit
 
 def test_area_hover_sampling_is_bounded(records):
     figure, _ = render(
-        records, milestones=[{"date": ["01/01/1900", "01/01/2100"], "label": "Long range"}]
+        records,
+        milestones=[{"date": ["01/01/1900", "01/01/2100"], "label": "Long range"}],
+        x_range=(date(1900, 1, 1), date(2100, 1, 1)),
     )
     hover = figure.data[-1]
     assert len(hover.x) == 400
     assert hover.x[0].startswith("1900-01-01")
     assert hover.x[-1].startswith("2100-01-01")
+
+
+def test_area_hover_initial_samples_are_clipped_to_visible_schedule(records):
+    figure, _ = render(
+        records,
+        milestones=[{"date": ["01/01/1900", "01/01/2100"], "label": "Long range"}],
+    )
+    hover = figure.data[-1]
+    assert hover.x[0].startswith(figure.layout.xaxis.range[0])
+    assert hover.x[-1].startswith(figure.layout.xaxis.range[1])
+    assert hover.meta["ganttify"]["original_start"] == "1900-01-01"
+    assert hover.meta["ganttify"]["original_end"] == "2100-01-01"
+    assert "<b>Start:</b> 1900-01-01" in hover.hovertext[0]
+    assert "<b>End:</b> 2100-01-01" in hover.hovertext[0]
+
+
+def test_two_row_milestone_line_covers_the_full_visible_height():
+    records = (
+        [{"ID": "P", "Name": "Project", "Parent": None}],
+        [
+            {
+                "WBS_ID": "P",
+                "Activity_ID": "A",
+                "Activity_Name": "Work",
+                "Start_Date": "01/01/2025",
+                "End_Date": "01/10/2025",
+            }
+        ],
+    )
+    figure, _ = render(records, milestones=[{"date": "01/20/2025", "label": "Deadline"}])
+    hover = figure.data[-1]
+    lower, upper = figure.layout.yaxis.range
+    pixels = figure.layout.height - figure.layout.margin.t - figure.layout.margin.b
+    assert min(hover.y) == lower and max(hover.y) == upper
+    for first, last in zip(hover.y, hover.y[1:], strict=False):
+        assert (last - first) / (upper - lower) * pixels <= 8.000001
+    # Unlike one marker per row boundary, row-center hovers are also reachable.
+    for position in (1, 2):
+        assert min(abs(value - position) for value in hover.y) / (upper - lower) * pixels <= 4
+
+
+def test_distant_milestones_do_not_expand_project_automatic_bounds(records):
+    baseline, _ = render(records)
+    figure, _ = render(records, milestones=[{"date": "01/01/2050", "label": "Distant"}])
+    assert figure.layout.xaxis.range == baseline.layout.xaxis.range
+    assert not figure.layout.shapes
+    assert not any(trace.type == "scatter" for trace in figure.data)
+
+
+def test_marker_only_chart_gets_marker_bounds_and_explicit_range_admits_markers(records):
+    marker = {"date": "01/01/2050", "label": "Distant"}
+    empty, _ = render(([], []), milestones=[marker])
+    assert empty.layout.xaxis.range == ("2049-12-02", "2050-01-31")
+    figure, rows = render(
+        records, milestones=[marker], x_range=(date(2049, 12, 1), date(2050, 2, 1))
+    )
+    assert rows == []
+    assert figure.layout.xaxis.range == ("2049-12-01", "2050-02-01")
+    assert len(figure.layout.shapes) == 1
+
+
+def test_equal_endpoint_milestone_range_keeps_interval_tooltip(records):
+    interval, _ = render(
+        records,
+        milestones=[{"date": ["01/02/2025", "01/02/2025"], "label": "One-day interval"}],
+    )
+    point, _ = render(records, milestones=[{"date": "01/02/2025", "label": "Point"}])
+    assert interval.layout.shapes[0].type == "line"
+    assert "<b>Start:</b> 2025-01-02" in interval.data[-1].hovertext[0]
+    assert "<b>End:</b> 2025-01-02" in interval.data[-1].hovertext[0]
+    assert "<b>Duration:</b> 1 days" in interval.data[-1].hovertext[0]
+    assert "<b>Date:</b> 2025-01-02" in point.data[-1].hovertext[0]
+    assert "<b>Duration:</b>" not in point.data[-1].hovertext[0]
 
 
 def test_bar_customdata_preserves_original_r_click_metadata(records):

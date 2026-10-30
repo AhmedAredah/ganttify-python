@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.1
+
+- Make explicit custom date formats authoritative and reject duplicate DataFrame
+  column names before converting input tables.
+- Share normalized dates, inferred actual ends, and computed WBS fields across
+  rendering, attribute coloring, and custom tooltip selectors.
+- Accept nested `None` defaults and support native plus R/JSON-style string keys
+  in attribute color mappings.
+- Preserve two-date milestone interval semantics when both endpoints are equal.
+- Keep automatic project bounds independent of distant milestone markers.
+- Fix browser-display document lifetime, live margin-based label fitting, and
+  custom interaction handling for `staticPlot` exports.
+- Adapt milestone hover coverage to the viewport and rendered size; retain timeline
+  coverage for wide year ranges with coarser calendar bands.
+- Add regressions for the audited input, display, and embedding cases, and clarify
+  remaining compatibility and frontend-verification limits in the documentation.
+
 ## 0.1.0
 
 Initial Python adaptation of Ganttify R 0.2.12, source commit

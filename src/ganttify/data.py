@@ -49,11 +49,13 @@ def parse_date(
     date_format: str = "%m/%d/%Y",
     optional: bool = False,
 ) -> date | None:
-    """Parse a date object, configured string format, or ISO ``YYYY-MM-DD``.
+    """Parse native dates or strings using the selected format.
 
-    Ambiguous numeric dates are interpreted only with ``date_format``. Datetime
-    values retain their calendar date; schedules do not represent time zones or
-    time-of-day. Optional fields also accept scalar nulls and blank strings.
+    The default format also accepts ISO ``YYYY-MM-DD``. An explicitly selected
+    nondefault format is authoritative, including for strings that resemble ISO
+    dates. Datetime values retain their calendar date; schedules do not represent
+    time zones or time-of-day. Optional fields also accept scalar nulls and blank
+    strings.
     """
     if is_missing(value):
         if optional:
@@ -67,14 +69,16 @@ def parse_date(
         raise TypeError(f"{field} must be a date, datetime, or date string")
     text = value.strip()
     try:
-        if _ISO_DATE.fullmatch(text):
+        if date_format == "%m/%d/%Y" and _ISO_DATE.fullmatch(text):
             return date.fromisoformat(text)
         return datetime.strptime(text, date_format).date()
     except (ValueError, TypeError) as exc:
-        raise ValueError(
-            f"Invalid date in {field}: {value!r}; use {date_format!r}, "
-            "ISO YYYY-MM-DD, or a date object"
-        ) from exc
+        accepted = (
+            f"{date_format!r}, ISO YYYY-MM-DD, or a date object"
+            if date_format == "%m/%d/%Y"
+            else f"the selected format {date_format!r} or a date object"
+        )
+        raise ValueError(f"Invalid date in {field}: {value!r}; use {accepted}") from exc
 
 
 def _is_column(value: Any) -> bool:
@@ -107,6 +111,18 @@ def _records(data: Any, name: str) -> list[dict[str, Any]]:
                 for values in zip(*columns.values(), strict=True)
             ]
     elif callable(getattr(data, "to_dict", None)):
+        frame_columns = getattr(data, "columns", None)
+        if frame_columns is not None:
+            seen: set[str] = set()
+            duplicates: list[str] = []
+            for column in frame_columns:
+                if not isinstance(column, str):
+                    raise TypeError(f"{name} column names must be strings")
+                if column in seen and column not in duplicates:
+                    duplicates.append(column)
+                seen.add(column)
+            if duplicates:
+                raise ValueError(f"{name} has duplicate column names: {', '.join(duplicates)}")
         try:
             source = data.to_dict(orient="records")
         except TypeError as exc:
@@ -224,6 +240,7 @@ def _prepare_milestones(records: list[dict[str, Any]], date_format: str) -> tupl
                 label_position=position,
                 label_level=int(level),
                 fields=MappingProxyType(dict(row)),
+                is_range=len(dates) == 2,
             )
         )
     return tuple(milestones)
@@ -299,6 +316,13 @@ def prepare_project(
             end_actual = max(as_of, start_actual)
         if start_actual is not None and end_actual is not None and end_actual < start_actual:
             raise ValueError(f"Activity {identifier!r} actual end must not precede start")
+        normalized_fields = dict(row)
+        normalized_fields.update(
+            Start_Date=start,
+            End_Date=end,
+            Start_Date_Actual=start_actual,
+            End_Date_Actual=end_actual,
+        )
         prepared_activities.append(
             Activity(
                 id=identifier,
@@ -308,7 +332,7 @@ def prepare_project(
                 end=end,
                 start_actual=start_actual,
                 end_actual=end_actual,
-                fields=MappingProxyType(dict(row)),
+                fields=MappingProxyType(normalized_fields),
             )
         )
     milestones = (

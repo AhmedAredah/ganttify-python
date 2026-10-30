@@ -10,7 +10,8 @@ schedules, and self-contained HTML export. This is the Python adaptation of
 
 The repository and distribution are named `ganttify-python`; the Python import is
 `ganttify`. This keeps the original name recognizable while making the language
-clear. The package version starts independently at `0.1.0`.
+clear. The Python package has its own version sequence; the current version is
+`0.1.1`.
 
 ## Install
 
@@ -56,8 +57,10 @@ actual end reproducible. Omit it to use the current date.
 
 In a notebook, display `chart` as the final expression in a cell. Use the wrapper's
 `show()`, `to_html()`, or `write_html()` to retain the custom browser interactions.
-`chart.figure` exposes a normal Plotly figure for further customization; exporting
-that bare figure directly does not install Ganttify's browser runtime.
+`chart.figure` exposes a normal Plotly figure for styling, including margin changes;
+exporting that bare figure directly does not install Ganttify's browser runtime.
+The same limit applies when passing the bare figure to Dash. See the
+[display and embedding contract](docs/api.md#ganttchart).
 
 ## Features
 
@@ -101,16 +104,21 @@ chart = ganttify(
 chart.write_html("design.html")
 ```
 
-Dates accept `datetime.date`, `datetime.datetime`, ISO `YYYY-MM-DD`, and the default
-`MM/DD/YYYY`. Supply `date_format` for another explicit `strptime` format.
+With the default `date_format="%m/%d/%Y"`, date strings accept US `MM/DD/YYYY` and
+ISO `YYYY-MM-DD`. A nondefault `date_format` is authoritative for every date string,
+including `as_of`, `x_range`, and milestones. Native `datetime.date` and
+`datetime.datetime` values are accepted independently of the string format.
 IDs must be nonempty and unique within their respective WBS/activity collections.
 Invalid parents, cycles, unknown WBS references, and reversed dates produce clear
-errors. Inputs are copied rather than modified.
+errors. DataFrame column names must also be unique. Inputs are copied rather than
+modified; parsed and inferred dates are shared consistently by bars, labels, colors,
+and tooltip selectors.
 
 ## Configuration
 
 All six configuration groups accept nested dictionaries or typed configuration
-objects. Partial dictionaries merge with defaults; unknown keys are rejected.
+objects. Partial dictionaries merge with defaults; nested `None` values select the
+field default, while genuinely nullable fields keep `None`. Unknown keys are rejected.
 
 ```python
 from ganttify import LayoutConfig
@@ -133,8 +141,12 @@ chart = ganttify(
 ```
 
 See [API reference](docs/api.md), [architecture](docs/architecture.md), and
-[porting notes](docs/porting.md). Runnable examples are in
+[porting notes](docs/porting.md) for the input compatibility policy and known limits.
+Runnable examples are in
 [examples/basic.py](examples/basic.py) and [examples/advanced.py](examples/advanced.py).
+
+The package implements the original feature groups with deliberate corrections;
+this does not establish pixel-identical output or exhaustive R input parity.
 
 ## Python and platform policy
 

@@ -43,6 +43,38 @@ def test_hierarchy_order_and_rolled_up_planned_actual_spans():
     assert rows[3].end == rows[1].end
 
 
+def test_wbs_fields_expose_computed_values_over_conflicting_source_fields():
+    nodes = [
+        {
+            "ID": "root",
+            "Name": "Root",
+            "Parent": None,
+            "Level": 99,
+            "Start_Date": "Wrong source value",
+            "End_Date": "Another wrong value",
+            "Owner": "PM",
+        },
+        {"ID": "child", "Name": "Child", "Parent": "root"},
+        {"ID": "empty", "Name": "Empty", "Parent": None, "Level": 42},
+    ]
+    project = prepare_project(
+        nodes,
+        [activity("A", "child", Start_Date_Actual="2024-12-31", End_Date_Actual="2025-01-20")],
+        as_of=AS_OF,
+    )
+    rows = build_rows(project, DisplayConfig())
+    root, child, _, empty = rows
+    for row, level in ((root, 0), (child, 1)):
+        assert row.fields["Level"] == row.level == level
+        assert row.fields["Start_Date"] == row.start == date(2024, 12, 31)
+        assert row.fields["End_Date"] == row.end == date(2025, 1, 20)
+    assert root.fields["Owner"] == "PM"
+    assert empty.fields["Level"] == 0
+    assert empty.fields["Start_Date"] is None and empty.fields["End_Date"] is None
+    assert nodes[0]["Level"] == 99 and nodes[0]["Start_Date"] == "Wrong source value"
+    assert project.wbs[0].fields["Level"] == 99  # original node fields remain untouched
+
+
 def test_visibility_removes_rows_without_affecting_spans():
     from ganttify.config import ActivityDisplay, WBSDisplay
 

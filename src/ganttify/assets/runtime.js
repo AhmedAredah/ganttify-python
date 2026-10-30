@@ -17,6 +17,9 @@
         'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const BACKGROUND = 'ganttify-background';
     const FIRST_DATE = Date.parse('0001-01-01T00:00:00Z');
+    const LAST_DATE = Date.parse('9999-12-31T23:59:59.999Z');
+    const HOVER_SPACING = 8;
+    const MAX_HOVER_POINTS = 2000;
 
     function calendarMillis(year, month, day) {
         const value = new Date(0);
@@ -47,7 +50,8 @@
 
     function background(start, end, index) {
         return {type: 'rect', name: BACKGROUND, xref: 'x', yref: 'paper',
-            x0: new Date(start).toISOString(), x1: new Date(end).toISOString(),
+            x0: new Date(Math.max(FIRST_DATE, start)).toISOString(),
+            x1: new Date(Math.min(LAST_DATE, end)).toISOString(),
             y0: 0, y1: 1, fillcolor: index % 2 === 0 ? 'rgba(240,240,240,0.6)' : 'rgba(255,255,255,0)',
             line: {width: 0}, layer: 'below'};
     }
@@ -64,22 +68,31 @@
         const values = [];
         const labels = [];
         const first = new Date(start);
+        const last = new Date(end);
+        // Adapt the unit to cover the complete range with bounded SVG work.
+        // A fixed iteration cutoff silently omitted the later centuries.
+        const years = last.getUTCFullYear() - first.getUTCFullYear() + 1;
+        const wanted = Math.max(1, Math.ceil(years / 200));
+        const power = 10 ** Math.floor(Math.log10(wanted));
+        const yearStep = [1, 2, 5, 10].find(value => value * power >= wanted) * power;
         let cursor;
-        if (yearMode) cursor = calendarMillis(first.getUTCFullYear(), 0, 1);
+        if (yearMode) cursor = calendarMillis(
+            Math.floor((first.getUTCFullYear() - 1) / yearStep) * yearStep + 1, 0, 1);
         else if (monthMode) cursor = calendarMillis(first.getUTCFullYear(), first.getUTCMonth(), 1);
         else cursor = calendarMillis(first.getUTCFullYear(), first.getUTCMonth(), first.getUTCDate() - first.getUTCDay());
-        // A bounded loop protects the page from pathological user-supplied extents.
-        for (let count = 0; cursor <= end && count < 2048; count += 1) {
+        for (let count = 0; cursor <= end && count < 202; count += 1) {
             const current = new Date(cursor);
             let next;
             let midpoint;
             let label;
             let parity;
             if (yearMode) {
-                next = calendarMillis(current.getUTCFullYear() + 1, 0, 1);
-                midpoint = calendarMillis(current.getUTCFullYear(), 6, 1);
+                next = calendarMillis(current.getUTCFullYear() + yearStep, 0, 1);
+                midpoint = yearStep === 1 ? calendarMillis(current.getUTCFullYear(), 6, 1) :
+                    (cursor + Math.min(next, end)) / 2;
                 label = String(current.getUTCFullYear());
-                parity = current.getUTCFullYear();
+                if (yearStep > 1) label += '–' + Math.min(9999, current.getUTCFullYear() + yearStep - 1);
+                parity = Math.floor((current.getUTCFullYear() - 1) / yearStep);
             } else if (monthMode) {
                 next = calendarMillis(current.getUTCFullYear(), current.getUTCMonth() + 1, 1);
                 midpoint = calendarMillis(current.getUTCFullYear(), current.getUTCMonth(), 15);
@@ -181,7 +194,9 @@
         const positions = axis.tickvals || [];
         const full = meta.full_labels || [];
         const kinds = meta.row_kinds || [];
-        const width = Math.max(0, Number(meta.gutter_width || (layout.margin || {}).l || 300) - 10);
+        const actualMargin = ((el._fullLayout || {}).margin || {}).l;
+        const inputMargin = (layout.margin || {}).l;
+        const width = Math.max(0, Number(actualMargin ?? inputMargin ?? meta.gutter_width ?? 300) - 10);
         let nodes = el.querySelectorAll('.yaxislayer-above .ytick text');
         if (!nodes.length) nodes = el.querySelectorAll('.ytick text');
         for (let order = 0; order < nodes.length; order += 1) {
@@ -189,10 +204,94 @@
             const datum = node.__data__ || (node.parentNode || {}).__data__ || {};
             const index = positions.findIndex(function (position) { return Number(position) === Number(datum.x); });
             const selected = index >= 0 ? index : order;
-            const label = full[selected] !== undefined ? full[selected] :
+            let label = full[selected] !== undefined ? full[selected] :
                 node.getAttribute('data-ganttify-full-label') || node.textContent;
+            const original = meta.rendered_ticktext;
+            const current = axis.ticktext;
+            if (original && current && current[selected] !== original[selected]) {
+                // Plotly already rendered/sanitized the caller's replacement.
+                // Cache its complete DOM text before fitting so redraws never
+                // restore the generator's stale label or truncate twice.
+                const source = String(current[selected] ?? '');
+                if (node.getAttribute('data-ganttify-user-source') !== source) {
+                    let text = node.textContent || '';
+                    for (const child of Array.from(node.children || [])) {
+                        if (String(child.tagName).toLowerCase() === 'title' &&
+                            text.endsWith(child.textContent || '')) {
+                            text = text.slice(0, text.length - (child.textContent || '').length);
+                        }
+                    }
+                    node.setAttribute('data-ganttify-user-source', source);
+                    node.setAttribute('data-ganttify-user-label', text);
+                }
+                label = node.getAttribute('data-ganttify-user-label') || '';
+            } else {
+                node.removeAttribute('data-ganttify-user-source');
+                node.removeAttribute('data-ganttify-user-label');
+            }
             fitLabel(node, label, width, meta.label_max_chars, kinds[selected] === 'wbs');
         }
+    }
+
+    function evenlySpaced(start, end, count) {
+        return Array.from({length: count}, function (_, index) {
+            return start + (end - start) * index / (count - 1);
+        });
+    }
+
+    function hoverSamples(el, trace) {
+        const layout = el.layout || {};
+        const fullLayout = el._fullLayout || {};
+        const meta = (trace.meta || {}).ganttify || {};
+        const yRange = (layout.yaxis || {}).range;
+        if (!yRange || yRange.length !== 2) return null;
+        const lower = Math.min(Number(yRange[0]), Number(yRange[1]));
+        const upper = Math.max(Number(yRange[0]), Number(yRange[1]));
+        if (![lower, upper].every(Number.isFinite)) return null;
+        if (meta.kind === 'milestone-line') {
+            const date = meta.date || meta.original_start || (trace.x || [])[0];
+            if (!Number.isFinite(utcMillis(date))) return null;
+            const height = Number((fullLayout.yaxis || {})._length) || 400;
+            const count = Math.min(MAX_HOVER_POINTS, Math.max(2, Math.ceil(height / HOVER_SPACING) + 1));
+            return {x: Array(count).fill(date), y: evenlySpaced(lower, upper, count)};
+        }
+        if (meta.kind !== 'milestone-area') return null;
+        const originalStart = utcMillis(meta.original_start || (trace.x || [])[0]);
+        const originalEnd = utcMillis(meta.original_end || (trace.x || []).at(-1));
+        const xRange = (layout.xaxis || {}).range;
+        if (!xRange || xRange.length !== 2) return null;
+        const rangeStart = Math.min(utcMillis(xRange[0]), utcMillis(xRange[1]));
+        const rangeEnd = Math.max(utcMillis(xRange[0]), utcMillis(xRange[1]));
+        if (![originalStart, originalEnd, rangeStart, rangeEnd].every(Number.isFinite) ||
+            rangeEnd <= rangeStart || originalEnd < originalStart) return null;
+        const start = Math.max(originalStart, rangeStart);
+        const end = Math.min(originalEnd, rangeEnd);
+        const edge = meta.label_position === 'bottom' ? lower :
+            meta.label_position === 'middle' ? (lower + upper) / 2 : upper;
+        if (end < start) {
+            // Keep original hover text available while the area is off screen.
+            return {x: [originalStart, originalEnd].map(value => new Date(value).toISOString()),
+                y: [edge, edge]};
+        }
+        const width = Number((fullLayout.xaxis || {})._length) || 800;
+        const visibleWidth = width * (end - start) / (rangeEnd - rangeStart);
+        const count = Math.min(MAX_HOVER_POINTS, Math.max(2, Math.ceil(visibleWidth / HOVER_SPACING) + 1));
+        return {x: evenlySpaced(start, end, count).map(value => new Date(value).toISOString()),
+            y: Array(count).fill(edge)};
+    }
+
+    function samePoints(first, second) {
+        return first && first.length === second.length && second.every(function (value, index) {
+            return typeof value === 'number' ? Math.abs(Number(first[index]) - value) < 0.000001 :
+                utcMillis(first[index]) === utcMillis(value);
+        });
+    }
+
+    function geometryKey(el) {
+        const layout = el.layout || {};
+        const full = el._fullLayout || {};
+        return JSON.stringify([(layout.yaxis || {}).range,
+            (full.xaxis || {})._length, (full.yaxis || {})._length]);
     }
 
     function mount(el, Plotly, host) {
@@ -201,7 +300,7 @@
         const schedule = env.setTimeout ? env.setTimeout.bind(env) : setTimeout;
         const cancel = env.clearTimeout ? env.clearTimeout.bind(env) : clearTimeout;
         const state = {internal: 0, destroyed: false, pending: false, running: null,
-            timer: null, lastRangeKey: null, lastError: null};
+            timer: null, lastRangeKey: null, lastGeometryKey: null, lastError: null};
         const handlers = [];
 
         function guarded(operation) {
@@ -226,32 +325,34 @@
             return axes;
         }
 
-        async function updateMilestoneEdges() {
-            const range = ((el.layout || {}).yaxis || {}).range;
-            if (!range || range.length !== 2) return;
+        async function updateMilestoneHover() {
             const indices = [];
-            const updates = [];
+            const xUpdates = [];
+            const yUpdates = [];
+            const hoverUpdates = [];
+            const customUpdates = [];
             for (let i = 0; i < (el.data || []).length; i += 1) {
                 const trace = el.data[i];
-                const meta = (trace.meta || {}).ganttify;
-                if (!meta || meta.kind !== 'milestone-area') continue;
-                const edge = meta.label_position === 'bottom' ? Number(range[0]) :
-                    meta.label_position === 'middle' ? (Number(range[0]) + Number(range[1])) / 2 : Number(range[1]);
-                if (!Number.isFinite(edge)) continue;
-                const count = (trace.x || []).length;
-                if ((trace.y || []).length === count && Array.from(trace.y).every(function (value) { return Math.abs(Number(value) - edge) < 0.000001; })) continue;
+                const points = hoverSamples(el, trace);
+                if (!points || (samePoints(trace.x, points.x) && samePoints(trace.y, points.y))) continue;
+                const hover = Array.isArray(trace.hovertext) ? trace.hovertext[0] : trace.hovertext;
+                const custom = trace.customdata && trace.customdata[0];
                 indices.push(i);
-                updates.push(Array(count).fill(edge));
+                xUpdates.push(points.x);
+                yUpdates.push(points.y);
+                hoverUpdates.push(Array(points.x.length).fill(hover || ''));
+                customUpdates.push(custom === undefined ? null : Array(points.x.length).fill(custom));
             }
             if (indices.length) {
                 const axes = dateAxes(el.layout || {});
-                await guarded(function () { return Plotly.update(el, {y: updates}, axes, indices); });
+                await guarded(function () { return Plotly.update(el,
+                    {x: xUpdates, y: yUpdates, hovertext: hoverUpdates, customdata: customUpdates}, axes, indices); });
             }
         }
 
         async function refreshOnce() {
             if (state.destroyed) return;
-            await updateMilestoneEdges();
+            await updateMilestoneHover();
             const layout = el.layout || {};
             const sourceRange = (layout.xaxis || {}).range;
             if (!sourceRange || sourceRange.length !== 2) { alignLabels(el); return; }
@@ -296,6 +397,7 @@
                 state.lastRangeKey = rangeKey;
             }
             alignLabels(el);
+            state.lastGeometryKey = geometryKey(el);
         }
 
         function refresh() {
@@ -320,7 +422,7 @@
         }
 
         function onRelayout(event) {
-            if (state.internal || state.destroyed) return;
+            if (state.internal || state.destroyed || (el._context || {}).staticPlot) return;
             const change = event || {};
             if (Object.keys(change).some(function (key) { return /^xaxis2?\.(range|autorange)/.test(key); })) requestRefresh();
             if (Object.keys(change).some(function (key) { return /^yaxis\.(range|autorange)/.test(key); })) {
@@ -340,13 +442,15 @@
         }
 
         function onAfterplot() {
-            if (!state.destroyed) alignLabels(el);
+            if (state.destroyed) return;
+            alignLabels(el);
+            if (!state.internal && !state.running && geometryKey(el) !== state.lastGeometryKey) requestRefresh();
         }
 
         function onWheel(event) {
             const layout = el.layout || {};
             const meta = (layout.meta || {}).ganttify || {};
-            if (state.destroyed || event.ctrlKey || event.metaKey || event.shiftKey ||
+            if (state.destroyed || (el._context || {}).staticPlot || event.ctrlKey || event.metaKey || event.shiftKey ||
                 Math.abs(event.deltaX || 0) > Math.abs(event.deltaY || 0) || !event.deltaY ||
                 meta.total_rows <= meta.max_visible_rows) return;
             if (event.preventDefault) event.preventDefault();
@@ -363,9 +467,11 @@
         function bind(name, handler) {
             if (el.on) { el.on(name, handler); handlers.push([name, handler]); }
         }
-        bind('plotly_relayout', onRelayout);
+        if (!(el._context || {}).staticPlot) bind('plotly_relayout', onRelayout);
         bind('plotly_afterplot', onAfterplot);
-        if (el.addEventListener) el.addEventListener('wheel', onWheel, {passive: false});
+        if (el.addEventListener && !(el._context || {}).staticPlot) {
+            el.addEventListener('wheel', onWheel, {passive: false});
+        }
         const controller = {refresh, state, destroy: function () {
             state.destroyed = true;
             if (state.timer !== null) cancel(state.timer);
@@ -378,5 +484,6 @@
         return controller;
     }
 
-    return Object.freeze({utcMillis, minimumBar, timeline, normalizeYRange, fitLabel, alignLabels, mount});
+    return Object.freeze({utcMillis, minimumBar, timeline, normalizeYRange, fitLabel, alignLabels,
+        hoverSamples, mount});
 }));

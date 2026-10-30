@@ -33,13 +33,15 @@ the renderer protocol, for applications that need a different presentation layer
 | `milestone_lines` | Optional records with `date` and `label` plus styling/custom fields |
 | `chart_title` | Plain text chart title |
 | `x_range` | Two dates defining the exact initial x viewport; includes activities whose planned or actual interval overlaps |
-| `date_format` | Explicit `datetime.strptime` format for non-ISO date strings; default US dates |
+| `date_format` | String-date parsing policy: the default US format also accepts ISO; any nondefault format is authoritative |
 | `as_of` | Reference date for unfinished actual work and past-activity dimming; defaults to today's date |
 
 A record collection can be a sequence of mappings, a mapping of equally sized
 column sequences, or a pandas DataFrame. Empty collections are accepted. DataFrame
-support is duck-typed: the domain package does not import pandas. Custom columns
-are copied and retained for colors and tooltips.
+support is duck-typed: the domain package does not import pandas. Every DataFrame
+must have unique column names, including WBS, activity, and milestone tables.
+Duplicate names raise before conversion rather than allowing one column to replace
+another. Custom columns are copied and retained for colors and tooltips.
 
 WBS parents may be `None`, an empty string, or `"None"` for roots. Each non-root
 parent must reference an existing WBS. WBS IDs and activity IDs must each be unique;
@@ -53,14 +55,31 @@ must not be reversed. Durations include both calendar endpoints; no working-day,
 holiday, dependency, resource-leveling, or critical-path calculation is performed.
 
 WBS spans cover every descendant activity's planned and actual intervals. An empty
-WBS may have a label without a bar. Input date strings accept ISO `YYYY-MM-DD` or
-`date_format`; native date/datetime values are also accepted. Date-time values are
-normalized to dates because the schedule model uses calendar days.
+WBS may have a label without a bar. With the default `date_format="%m/%d/%Y"`,
+strings accept US dates or ISO `YYYY-MM-DD`. Supplying a different format makes it
+authoritative for all date strings, including `as_of`, `x_range`, activity dates,
+and milestone dates. For example, `"2025-02-01"` means January 2 under
+`date_format="%Y-%d-%m"`; it means February 1 under the default policy. Strings that
+do not match the explicit format raise instead of falling back to another format.
+Native date/datetime values bypass string parsing. Date-time values are normalized
+to dates because the schedule model uses calendar days.
+
+Bars, templates, custom tooltip selectors, and attribute coloring use the same
+normalized activity dates, including the inferred `End_Date_Actual`. WBS custom
+tooltip selectors also expose computed `Level`, `Start_Date`, and `End_Date`.
+These computed WBS values replace any conflicting input fields; unrelated custom
+columns remain available. Parsed date fields display as ISO dates in custom
+tooltips, while label-template date placeholders use `MM/DD/YYYY`.
 
 ## Configuration
 
 Each group accepts its named dataclass or a dictionary with the keys below. Nested
-partial dictionaries use defaults. Unknown keys, wrong types, invalid enum values,
+partial dictionaries use defaults. A nested `None` uses the declared default for
+that field, including a default nested configuration, empty mapping, empty tooltip
+selection, or empty hidden-label-level tuple. Nullable fields such as
+`y_scroll_position`, `yaxis_label_max_chars`, and the attribute `column` retain
+`None`; attribute mode still requires a nonempty column. This rule also applies to
+typed configuration constructors. Unknown keys, wrong types, invalid enum values,
 and out-of-range numbers raise errors.
 
 | Group | Keys and defaults |
@@ -83,7 +102,14 @@ and out-of-range numbers raise errors.
 WBS colors use the default ten-color palette when unspecified. Activities use their
 associated WBS color. Uniform mode uses one color for each row type. Attribute mode
 uses a custom activity column; unspecified mappings receive generated palette colors,
-and unmapped values fall back to gray.
+and unmapped values fall back to gray. Mapping lookup first tries the native value
+as a key, then its canonical string. This allows native numeric/date keys and
+R/JSON-style string keys: `Status=1` can match `{"1": "red"}`, and a normalized date
+can match `{"2025-01-01": "red"}`. An explicit native-key match takes precedence
+when both forms are provided. A terminal `.0` is removed from numeric strings
+(`1.0` becomes `"1"`); scientific notation is retained (`1e20` becomes `"1e+20"`).
+Booleans use R-style `"TRUE"` or `"FALSE"`. Boolean categories are kept
+separate from numeric categories, so `True` does not accidentally match numeric `1`.
 
 Hiding WBS or activity rows removes their y-axis slots. `show_yaxis_labels` controls
 activity labels; `WBSDisplay.show_labels` independently controls WBS labels. Heights
@@ -91,6 +117,11 @@ are fractions of one row. Opacities are in `[0, 1]`. `max_visible_rows` controls
 vertical viewport; scroll or pan to see additional rows. `y_scroll_position`, when
 provided, is a numeric lower row position. `xaxis_position` accepts `"bottom"`,
 `"top"`, or `"both"`.
+
+Without `x_range`, the initial horizontal range is the visible project rows' planned
+and actual extent plus `buffer_days`. Milestones outside that range do not expand
+the project view and are not drawn. If no project row has dates, milestones can
+define the fallback range. An explicit `x_range` always takes precedence.
 
 Activity template fields are `{name}`, `{id}`, `{start}`, `{end}`, `{start_actual}`,
 `{end_actual}`, `{duration}`, and `{wbs_id}`. WBS fields are `{name}`, `{id}`, `{start}`,
@@ -125,8 +156,11 @@ variance.
 | `label_level` | `1`; either 1 or 2 for label stacking |
 
 The visual range may collapse into a line when it is narrower than the minimum
-visible width. Tooltips retain the actual supplied interval. Hiding a label level
-removes its annotation while preserving its visual milestone and hover content.
+visible width. A supplied two-date interval remains an interval even when both
+dates are equal: its tooltip includes Start, End, and Duration of one day. Tooltips
+retain the actual supplied interval. Hiding a label level removes its annotation
+while preserving its visual milestone and hover content. Line-hover coverage and
+area-edge hover samples adapt to the visible viewport and rendered pixel dimensions.
 
 ## GanttChart
 
@@ -145,6 +179,27 @@ about Ganttify's additional JavaScript. Self-contained HTML embeds Plotly by def
 choosing CDN delivery requires internet access. HTML export options follow
 [Plotly's serializer](https://plotly.com/python-api-reference/generated/plotly.io.to_html.html),
 with the wrapper installing its runtime before any user-supplied `post_script`.
+`chart.to_html(config={"staticPlot": True})` disables both Plotly input interaction
+and Ganttify's custom scrolling handlers, while retaining the initial visual layout.
+
+Browser display serves one standalone document from a one-use loopback HTTP address
+and waits for the browser to request it. The document remains available during that
+handoff even when the caller is a short-lived script. A failed browser launch raises
+`RuntimeError`; a document that is not requested within 30 seconds raises
+`TimeoutError`. The one-use address is closed after delivery and is not a persistent
+reload URL. Use `write_html()` for a file that can be reopened or reloaded later.
+Browser previews embed the Plotly bundle when `include_plotlyjs=False` or
+`include_plotlyjs="directory"` is requested, because a fresh page needs Plotly and
+the transient address has no filesystem asset directory. Custom JavaScript bundles
+must use an HTTP(S) URL; use `write_html()` for local JavaScript assets. Ordinary
+HTML export preserves `include_plotlyjs=False` for embedding in a host page.
+
+Passing `.figure` to Dash or another native Plotly consumer retains ordinary Plotly
+behavior but does not install Ganttify's runtime. Embed the wrapper's exported HTML
+when the application needs its custom row scrolling, label fitting, adaptive bands,
+and minimum widths. No Dash-specific runtime adapter is provided. Notebook rich HTML
+output is supported by the wrapper, but actual Jupyter and Colab frontend behavior
+is separate from standalone-browser verification.
 
 Bar click events expose the original R-compatible fields in `point.customdata`:
 `type`, `original_start`, `original_end`, and `activity_id` for activities. The types

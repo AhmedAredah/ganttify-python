@@ -171,16 +171,69 @@ def test_show_rejects_unknown_renderer():
         chart.show(renderer="unsupported")
 
 
-def test_show_browser_uses_exported_interactive_file(monkeypatch, tmp_path):
+def test_show_browser_delivers_exported_interactive_html(monkeypatch):
     chart = ganttify([], [], as_of="2025-01-15")
-    opened = []
+    delivered = []
     import ganttify.chart as chart_module
 
-    monkeypatch.setattr(chart_module.tempfile, "mkdtemp", lambda **kwargs: str(tmp_path))
-    monkeypatch.setattr(chart_module.webbrowser, "open", opened.append)
-    monkeypatch.setattr(chart_module.atexit, "register", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chart_module, "open_html_in_browser", delivered.append)
     chart.show(renderer="browser", include_plotlyjs=False)
-    assert opened == [(tmp_path / "chart.html").as_uri()]
-    assert "Ganttify Python browser enhancements" in (tmp_path / "chart.html").read_text(
-        encoding="utf-8"
+    assert len(delivered) == 1
+    assert "plotly.js v" in delivered[0]
+    assert "Ganttify Python browser enhancements" in delivered[0]
+
+
+def test_browser_preview_embeds_directory_mode_bundle(monkeypatch):
+    import ganttify.chart as chart_module
+
+    delivered = []
+    monkeypatch.setattr(chart_module, "open_html_in_browser", delivered.append)
+    ganttify([], [], as_of="2025-01-15").show(renderer="browser", include_plotlyjs="directory")
+    assert "plotly.js v" in delivered[0]
+    assert 'src="plotly.min.js"' not in delivered[0]
+
+
+@pytest.mark.parametrize(
+    "bundle", ["plotly-custom.js", "/assets/plotly.js", "file:///tmp/plotly.js"]
+)
+def test_browser_preview_rejects_unservable_local_bundle(monkeypatch, bundle):
+    import ganttify.chart as chart_module
+
+    monkeypatch.setattr(
+        chart_module, "open_html_in_browser", lambda html: pytest.fail("Unexpected browser")
     )
+    with pytest.raises(ValueError, match="HTTP"):
+        ganttify([], [], as_of="2025-01-15").show(renderer="browser", include_plotlyjs=bundle)
+
+
+def test_browser_preview_preserves_external_bundle_url(monkeypatch):
+    import ganttify.chart as chart_module
+
+    delivered = []
+    monkeypatch.setattr(chart_module, "open_html_in_browser", delivered.append)
+    url = "https://example.org/custom-plotly.js"
+    ganttify([], [], as_of="2025-01-15").show(renderer="browser", include_plotlyjs=url)
+    assert f'src="{url}"' in delivered[0]
+
+
+def test_notebook_show_installs_runtime_without_opening_browser(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    import ganttify.chart as chart_module
+
+    captured = []
+    ipython = ModuleType("IPython")
+    ipython.get_ipython = lambda: object()
+    display = ModuleType("IPython.display")
+    display.HTML = lambda value: value
+    display.display = captured.append
+    monkeypatch.setitem(sys.modules, "IPython", ipython)
+    monkeypatch.setitem(sys.modules, "IPython.display", display)
+    monkeypatch.setattr(
+        chart_module, "open_html_in_browser", lambda html: pytest.fail("Unexpected browser")
+    )
+    ganttify([], [], as_of="2025-01-15").show(include_plotlyjs=False)
+    assert len(captured) == 1
+    assert "<html>" not in captured[0]
+    assert "Ganttify Python browser enhancements" in captured[0]

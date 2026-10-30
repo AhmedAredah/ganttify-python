@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
+from numbers import Real
 from typing import Any
 
 from .config import ColorConfig
@@ -34,6 +36,25 @@ ATTRIBUTE_PALETTE = (
 )
 
 
+def _category_key(value: Any) -> tuple[str, Any]:
+    """Keep Boolean categories distinct from equal numeric values."""
+    return ("boolean" if isinstance(value, bool) else "value", value)
+
+
+def _category_text(value: Any) -> str:
+    """Return the R/JSON-compatible spelling used after native-key lookup."""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value)
+    if isinstance(value, Real) and text.endswith(".0"):
+        return text[:-2]
+    return text
+
+
 class ColorResolver:
     """Resolve WBS, uniform, or attribute colors with deterministic palettes."""
 
@@ -47,7 +68,9 @@ class ColorResolver:
                 for index, node in enumerate(project.wbs)
             }
         )
-        self._attributes: dict[Any, str] = dict(config.attribute.mapping)
+        self._attributes: dict[tuple[str, Any], str] = {
+            _category_key(key): color for key, color in config.attribute.mapping.items()
+        }
         if config.mode == "attribute":
             column = config.attribute.column
             if not column:
@@ -62,8 +85,9 @@ class ColorResolver:
                     if is_missing(value):
                         continue
                     try:
-                        if value not in self._attributes:
-                            self._attributes[value] = ATTRIBUTE_PALETTE[
+                        key = _category_key(value)
+                        if key not in self._attributes:
+                            self._attributes[key] = ATTRIBUTE_PALETTE[
                                 len(self._attributes) % len(ATTRIBUTE_PALETTE)
                             ]
                     except TypeError as error:
@@ -84,6 +108,9 @@ class ColorResolver:
         if is_missing(value):
             return "#95A5A6"
         try:
-            return self._attributes.get(value, "#95A5A6")
+            native = self._attributes.get(_category_key(value))
+            if native is not None:
+                return native
+            return self._attributes.get(_category_key(_category_text(value)), "#95A5A6")
         except TypeError:
             return "#95A5A6"

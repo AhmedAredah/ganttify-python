@@ -85,7 +85,8 @@ async function hoverBar(page, id, role, atDate, expected) {
 
 async function main() {
     const generated = spawnSync(process.env.PYTHON || 'python',
-        [path.join(__dirname, 'browser_fixture.py'), html], {
+        [...(process.env.GANTTIFY_TEST_INSTALLED ? ['-I'] : []),
+            path.join(__dirname, 'browser_fixture.py'), html], {
             cwd: root,
             encoding: 'utf8',
             env: {...process.env, PYTHONPATH: path.join(root, 'src')},

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, time, timedelta
+from math import ceil
 from typing import Any
 
 import plotly.graph_objects as go
@@ -49,9 +50,12 @@ def _bounds(
                 starts.append(row.activity.start_actual)
             if row.activity.end_actual is not None:
                 ends.append(row.activity.end_actual)
-    for milestone in project.milestones:
-        starts.append(milestone.start)
-        ends.append(milestone.end)
+    # Markers annotate a schedule rather than expanding it. A marker-only chart
+    # still needs useful automatic bounds when no visible schedule has dates.
+    if not starts or not ends:
+        for milestone in project.milestones:
+            starts.append(milestone.start)
+            ends.append(milestone.end)
     if not starts or not ends:
         upper = _safe_date_offset(as_of, 365)
         return (as_of, upper) if upper > as_of else (_safe_date_offset(as_of, -365), as_of)
@@ -70,6 +74,24 @@ def _viewport(count: int, config: ChartConfig) -> tuple[float, float]:
             0.5, min(float(config.layout.y_scroll_position) - 0.5, max(0.5, count - visible + 0.5))
         )
     return bottom, bottom + visible
+
+
+def _layout_geometry(count: int, config: ChartConfig) -> tuple[int, int, int]:
+    """Share the rendered height and margins with the initial hover sampling."""
+    top_axis = config.layout.xaxis_position in {"top", "both"}
+    top = 110 if top_axis else 90
+    bottom = 45 if config.layout.xaxis_position == "top" else 80
+    visible = min(max(count, 1), config.layout.max_visible_rows)
+    height = max(350, visible * 28 + top + bottom)
+    return height, top, bottom
+
+
+def _line_hover_positions(count: int, config: ChartConfig) -> list[float]:
+    """Cover the visible line at eight-pixel intervals, including both edges."""
+    lower, upper = _viewport(count, config)
+    height, top, bottom = _layout_geometry(count, config)
+    intervals = max(1, ceil((height - top - bottom) / 8))
+    return [lower + (upper - lower) * index / intervals for index in range(intervals + 1)]
 
 
 def _truncate_label(value: str, max_chars: int | None) -> str:
@@ -199,11 +221,14 @@ def _add_milestone(
         )
         # Hover belongs to the label edge rather than the shaded fill: an
         # invisible fill covering the whole area would swallow activity hovers.
-        # Cap samples so a multi-decade milestone cannot inflate the document.
-        samples = min(400, max(2, (milestone.end - milestone.start).days + 1))
-        duration = milestone.end - milestone.start
+        # Initial samples cover the visible portion even for very long ranges.
+        # The browser resamples against its actual pixel width on zoom/resize.
+        visible_start = max(milestone.start, bounds[0])
+        visible_end = min(milestone.end, bounds[1])
+        samples = min(400, max(2, (visible_end - visible_start).days + 1))
+        duration = visible_end - visible_start
         x_points = [
-            (_utc(milestone.start) + duration * index / (samples - 1)).isoformat()
+            (_utc(visible_start) + duration * index / (samples - 1)).isoformat()
             for index in range(samples)
         ]
         lower, upper = _viewport(count, config)
@@ -225,6 +250,8 @@ def _add_milestone(
                         "kind": "milestone-area",
                         "label": milestone.label,
                         "label_position": milestone.label_position,
+                        "original_start": milestone.start.isoformat(),
+                        "original_end": milestone.end.isoformat(),
                     }
                 },
             )
@@ -238,7 +265,7 @@ def _add_milestone(
             line={"color": milestone.color, "width": milestone.width, "dash": milestone.dash},
             **common_shape,
         )
-        points = [index + 0.5 for index in range(max(count, 1) + 1)]
+        points = _line_hover_positions(count, config)
         figure.add_trace(
             go.Scatter(
                 x=[x] * len(points),
@@ -249,7 +276,15 @@ def _add_milestone(
                 hovertemplate="%{hovertext}<extra></extra>",
                 showlegend=False,
                 name=milestone.label,
-                meta={"ganttify": {"kind": "milestone", "label": milestone.label}},
+                meta={
+                    "ganttify": {
+                        "kind": "milestone-line",
+                        "label": milestone.label,
+                        "date": x,
+                        "original_start": milestone.start.isoformat(),
+                        "original_end": milestone.end.isoformat(),
+                    }
+                },
             )
         )
     if milestone.label_level in config.display.milestone.hide_label_levels:
@@ -388,12 +423,7 @@ class PlotlyRenderer:
         if any(full_labels) and not config.layout.show_yaxis_labels:
             longest = max((len(label) for label in full_labels), default=0)
             gutter = min(gutter, max(100, longest * 7 + 20))
-        top_axis = config.layout.xaxis_position in {"top", "both"}
-        top_margin, bottom_margin = (
-            (110 if top_axis else 90),
-            (45 if config.layout.xaxis_position == "top" else 80),
-        )
-        visible_rows = min(max(count, 1), config.layout.max_visible_rows)
+        height, top_margin, bottom_margin = _layout_geometry(count, config)
         axis = {
             "title": "Timeline",
             "type": "date",
@@ -429,13 +459,14 @@ class PlotlyRenderer:
             showlegend=False,
             margin={"l": gutter, "r": 50, "t": top_margin, "b": bottom_margin},
             dragmode="pan",
-            height=max(350, visible_rows * 28 + top_margin + bottom_margin),
+            height=height,
             meta={
                 "ganttify": {
                     "total_rows": count,
                     "max_visible_rows": config.layout.max_visible_rows,
                     "label_max_chars": config.layout.yaxis_label_max_chars,
                     "full_labels": full_labels,
+                    "rendered_ticktext": list(ticktext),
                     "row_kinds": [row.kind for row in rows],
                     "gutter_width": gutter,
                 }
