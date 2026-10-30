@@ -4,8 +4,18 @@ from __future__ import annotations
 
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from threading import Event, Thread
 from uuid import uuid4
+
+
+class _PreviewServer(ThreadingHTTPServer):
+    """Bind a loopback preview without an unnecessary reverse-DNS lookup."""
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = self.server_address[1]
 
 
 def open_html_in_browser(html: str, *, timeout: float = 30.0) -> None:
@@ -38,7 +48,7 @@ def open_html_in_browser(html: str, *, timeout: float = 30.0) -> None:
         def log_message(self, format: str, *args: object) -> None:
             pass
 
-    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+    with _PreviewServer(("127.0.0.1", 0), Handler) as server:
         server.daemon_threads = True
         worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         worker.start()

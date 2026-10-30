@@ -36,7 +36,9 @@ Browser checks use the installed wheel, exercise all four axis positions with ea
 label mode, and verify label/margin overrides, static mode, normalized tooltips and
 colors, equal-endpoint intervals, and milestone hover after scrolling, zooming, and
 resizing. They produced no browser errors or external HTTP(S) requests. The Python
-suite also checks browser delivery from a short-lived subprocess.
+suite also checks browser delivery from a short-lived subprocess and rejects
+unexpected hostname lookups during loopback server startup. Synthetic clients
+connect directly, independently of system proxy discovery.
 
 The current commit's [GitHub Actions results](https://github.com/AhmedAredah/ganttify-python/actions)
 record the hosted checks, including Windows and macOS. Commands are in

@@ -12,6 +12,8 @@
 - Keep automatic project bounds independent of distant milestone markers.
 - Fix browser-display document lifetime, live margin-based label fitting, and
   custom interaction handling for `staticPlot` exports.
+- Keep loopback previews independent of reverse DNS, and isolate synthetic
+  browser-test requests from system proxy discovery on hosted runners.
 - Adapt milestone hover coverage to the viewport and rendered size; retain timeline
   coverage for wide year ranges with coarser calendar bands.
 - Add regressions for the audited input, display, and embedding cases, and clarify
